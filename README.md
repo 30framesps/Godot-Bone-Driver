@@ -79,7 +79,3 @@ Euler angles have a limitation: the **middle axis** of the chosen order is restr
 - Bone names must match exactly. If a source or target bone isn't found, the driver does nothing.
 - Non-finite results (NaN or infinity) are ignored.
 - Driver settings are saved in the scene under `drivers/N/...` properties.
-
-## License
-
-See [LICENSE](LICENSE).
