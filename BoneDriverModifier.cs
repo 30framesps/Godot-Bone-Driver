@@ -1,19 +1,13 @@
 using System.Collections.Generic;
 using Godot;
 
-// A single-script bone driver node. Add it as a child of a Skeleton3D, set "Driver Count",
-// and fill in each driver in the inspector. Works in the editor and at runtime.
-// Requires Godot 4.4+ (uses _ProcessModificationWithDelta).
 [Tool]
 [GlobalClass]
 public partial class BoneDriverModifier : SkeletonModifier3D
 {
 	private const string PropertyChoices =
-		"rotation.x,rotation.y,rotation.z,scale.x,scale.y,scale.z,position.x,position.y,position.z";
+		"rotation.x,rotation.y,rotation.z,twist.y,scale.x,scale.y,scale.z,position.x,position.y,position.z";
 
-	// Same order as Godot's EulerOrder enum (XYZ=0, XZY=1, YXZ=2, YZX=3, ZXY=4, ZYX=5).
-	// The *middle* letter is the axis limited to +/-90 deg (gimbal flip). Pick an order whose
-	// middle axis your bone never rotates 90 deg about. XZY = middle axis Z, Y is the innermost axis.
 	private const string RotationOrders = "XYZ,XZY,YXZ,YZX,ZXY,ZYX";
 
 	private class Driver
@@ -48,11 +42,8 @@ public partial class BoneDriverModifier : SkeletonModifier3D
 		}
 	}
 
-	// ---------------------------------------------------------------- inspector properties
-
 	public override void _EnterTree()
 	{
-		// Refresh bone-name dropdowns once the skeleton is reachable.
 		NotifyPropertyListChanged();
 	}
 
@@ -74,7 +65,7 @@ public partial class BoneDriverModifier : SkeletonModifier3D
 		Skeleton3D skeleton = GetSkeleton();
 		if (skeleton == null) return null;
 
-		var names = new List<string> { "" }; // empty first entry = "none"
+		var names = new List<string> { "" };
 		for (int i = 0; i < skeleton.GetBoneCount(); i++)
 			names.Add(skeleton.GetBoneName(i));
 		return string.Join(",", names);
@@ -142,7 +133,6 @@ public partial class BoneDriverModifier : SkeletonModifier3D
 		if (!TryParseName(property.ToString(), out int i, out string field) || i >= 1024)
 			return false;
 
-		// Scene loading may set driver fields before DriverCount; grow the list as needed.
 		while (_drivers.Count <= i) _drivers.Add(new Driver());
 		Driver d = _drivers[i];
 
@@ -161,9 +151,6 @@ public partial class BoneDriverModifier : SkeletonModifier3D
 		}
 	}
 
-	// ---------------------------------------------------------------- evaluation
-
-	// Drivers run top to bottom, so a driver can use the output of an earlier one as its source.
 	public override void _ProcessModificationWithDelta(double delta)
 	{
 		Skeleton3D skeleton = GetSkeleton();
@@ -188,10 +175,9 @@ public partial class BoneDriverModifier : SkeletonModifier3D
 		if (!TryGetBoneProperty(skeleton, sourceIdx, d.SourceProperty, order, out float sourceValue))
 			return;
 
-		// Re-parse if the expression text was edited.
 		if (!d.Parsed || d.ParsedText != d.Expr)
 		{
-			d.ParsedText = d.Expr; // remember it even on failure so errors don't spam every frame
+			d.ParsedText = d.Expr;
 			Error err = d.Compiled.Parse(d.Expr, new string[] { "v" });
 			if (err != Error.Ok)
 			{
@@ -269,7 +255,21 @@ public partial class BoneDriverModifier : SkeletonModifier3D
 		string type = parts[0].ToLowerInvariant();
 		string axis = parts[1].ToLowerInvariant();
 
-		Decompose(GetLocalDelta(skeleton, boneIdx), order, out Vector3 euler, out Vector3 scale, out Vector3 pos);
+		Transform3D delta = GetLocalDelta(skeleton, boneIdx);
+		if (type == "twist" && axis == "y")
+		{
+			Quaternion rotation = delta.Basis.Orthonormalized().GetRotationQuaternion();
+			if (rotation.W < 0f || (Mathf.IsZeroApprox(rotation.W) && rotation.Y < 0f))
+				rotation = new Quaternion(-rotation.X, -rotation.Y, -rotation.Z, -rotation.W);
+			rotation = rotation.Normalized();
+			float magnitude = Mathf.Sqrt(rotation.Y * rotation.Y + rotation.W * rotation.W);
+			value = magnitude > 1e-9f
+				? 2f * Mathf.Atan2(rotation.Y / magnitude, rotation.W / magnitude)
+				: 0f;
+			return true;
+		}
+
+		Decompose(delta, order, out Vector3 euler, out Vector3 scale, out Vector3 pos);
 
 		switch (type)
 		{
@@ -315,7 +315,6 @@ public partial class BoneDriverModifier : SkeletonModifier3D
 		}
 	}
 
-	// Decompose the target once, set all driven channels, recompose once.
 	private static void ApplyToTarget(Driver d, Skeleton3D skeleton, int boneIdx, float value, EulerOrder order)
 	{
 		Transform3D rest = skeleton.GetBoneRest(boneIdx);
